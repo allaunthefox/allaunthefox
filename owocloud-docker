@@ -1,0 +1,191 @@
+services:
+  # Traefik: Reverse proxy and SSL termination
+  traefik:
+    image: traefik:v3.3
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=your-email@example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.dnsChallenge.provider=cloudflare"
+      - "--certificatesresolvers.letsencrypt.acme.dnsChallenge.delayBeforeCheck=90"
+      - "--log.level=DEBUG"  # Add log level (DEBUG or INFO)
+      - "--log.filePath=/var/log/traefik.log"  # Specify log file location
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - CF_API_EMAIL=your-cloudflare-email@example.com
+      - CF_API_KEY=your-cloudflare-api-key
+      - TZ=UTC
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_config:/etc/traefik
+      - letsencrypt:/letsencrypt
+      - traefik_logs:/var/log  # Host directory mapped to container log directory
+    restart: unless-stopped
+
+  # Fail2Ban: Protect containers from brute-force attacks
+  fail2ban:
+    image: fail2ban/fail2ban:latest
+    container_name: fail2ban
+    depends_on:
+      - traefik  # Ensure Traefik starts first
+    volumes:
+      - traefik_logs:/var/log  # Mount Traefik's log directory for Fail2Ban
+    environment:
+      - TZ=UTC
+    restart: unless-stopped
+    command: >
+      bash -c "while ! docker exec traefik curl -s http://localhost:8080/health; do
+                  echo 'Waiting for Traefik to be ready...';
+                  sleep 5;
+                done;
+                fail2ban-client start"
+
+  # Vaultwarden: Unofficial Bitwarden compatible server written in Rust.
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    volumes:
+      - vaultwarden_data:/data
+    environment:
+      - WEBSOCKET_ENABLED=true
+      - TZ=UTC
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vaultwarden.rule=Host(`vaultwarden.owowatdis.cloud`)"`
+      - "traefik.http.routers.vaultwarden.entrypoints=websecure"
+      - "traefik.http.routers.vaultwarden.tls=true"
+      - "traefik.http.routers.vaultwarden.tls.certresolver=letsencrypt"
+      - "traefik.http.services.vaultwarden.loadbalancer.server.port=80"
+    restart: unless-stopped
+
+  # Portainer: Web-based container management UI
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.owowatdis.cloud`)"`
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.routers.portainer.tls=true"
+      - "traefik.http.routers.portainer.tls.certresolver=letsencrypt"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+    restart: unless-stopped
+
+  # Watchtower: Automated Docker container updater
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - $HOME/.docker/config.json:/config.json
+    environment:
+      - TZ=UTC
+      - WATCHTOWER_SCHEDULE=0 0 4 * * * # Update at 4 AM daily
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=false
+    restart: unless-stopped
+
+  # Homarr: Server dashboard
+  homarr:
+    image: ghcr.io/homarr-labs/homarr:latest
+    container_name: homarr
+    volumes:
+      - homarr_config:/appdata
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.homarr.rule=Host(`homarr.owowatdis.cloud`)"`
+      - "traefik.http.routers.homarr.entrypoints=websecure"
+      - "traefik.http.routers.homarr.tls=true"
+      - "traefik.http.routers.homarr.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Mealie: Recipe manager and meal planner
+  mealie:
+    image: hkotel/mealie:latest
+    container_name: mealie
+    environment:
+      - TZ=UTC
+      - DB_ENGINE=sqlite
+    volumes:
+      - mealie_config:/app/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mealie.rule=Host(`mealie.owowatdis.cloud`)"`
+      - "traefik.http.routers.mealie.entrypoints=websecure"
+      - "traefik.http.routers.mealie.tls=true"
+      - "traefik.http.routers.mealie.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # File Browser: Web-based file manager
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+    volumes:
+      - filebrowser_config:/config
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.filebrowser.rule=Host(`files.owowatdis.cloud`)"`
+      - "traefik.http.routers.filebrowser.entrypoints=websecure"
+      - "traefik.http.routers.filebrowser.tls=true"
+      - "traefik.http.routers.filebrowser.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Airsonic Advanced: Music streaming server
+  airsonic:
+    image: airsonicadvanced/airsonic-advanced:latest
+    container_name: airsonic
+    volumes:
+      - airsonic_config:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.airsonic.rule=Host(`music.owowatdis.cloud`)"`
+      - "traefik.http.routers.airsonic.entrypoints=websecure"
+      - "traefik.http.routers.airsonic.tls=true"
+      - "traefik.http.routers.airsonic.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # MeTube: Web GUI for video downloading
+  metube:
+    image: alexta69/metube:latest
+    container_name: metube
+    volumes:
+      - metube_downloads:/downloads
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.metube.rule=Host(`metube.owowatdis.cloud`)"`
+      - "traefik.http.routers.metube.entrypoints=websecure"
+      - "traefik.http.routers.metube.tls=true"
+      - "traefik.http.routers.metube.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Redis: Caching and message broker
+  redis:
+    image: redis:alpine
+    container_name: redis
+    command: redis-server --save 20 1 --loglevel warning --requirepass your_password
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  traefik_config:
+  letsencrypt:
+  traefik_logs:
+  vaultwarden_data:
+  portainer_data:
+  homarr_config:
+  mealie_config:
+  filebrowser_config:
+  airsonic_config:
+  metube_downloads:
+  redis_data:
